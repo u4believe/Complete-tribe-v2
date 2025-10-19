@@ -14,6 +14,9 @@ contract DeployMemeLaunchpad is Script {
         // Get private key from environment
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
 
+        // Get network URL from environment
+        string memory networkUrl = vm.envString("NETWORK_URL");
+
         vm.startBroadcast(deployerPrivateKey);
 
         // Deploy TRUST token first
@@ -31,6 +34,7 @@ contract DeployMemeLaunchpad is Script {
         MemeLaunchpad memeLaunchpad = new MemeLaunchpad(address(trustToken));
 
         console.log("MemeLaunchpad deployed at:", address(memeLaunchpad));
+        console.log("Network URL:", networkUrl);
 
         vm.stopBroadcast();
     }

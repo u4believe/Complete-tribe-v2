@@ -2,9 +2,11 @@
 pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
+import "./MemeToken.sol";
 
 /**
  * @title MemeLaunchpad
@@ -132,22 +134,21 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
     /**
      * @dev Buy tokens from the bonding curve using pump.fun style calculation
      */
-    function buyTokens(address tokenAddress, uint256 minTokensOut)
+    function buyTokens(address tokenAddress, uint256 trustAmount, uint256 minTokensOut)
         external
-        payable
         nonReentrant
         onlyValidToken(tokenAddress)
         returns (uint256 tokensBought)
     {
         TokenInfo storage token = tokenInfo[tokenAddress];
         require(!token.completed, "Token launch completed");
-        require(msg.value > 0, "Must send TRUST");
+        require(trustAmount > 0, "Must send TRUST");
 
         uint256 tokensBefore = token.virtualTokens + token.currentSupply;
         uint256 trustBefore = token.virtualTrust;
 
         // Calculate tokens to receive using pump.fun integral formula
-        uint256 tokensAfter = calculateTokensAfterBuy(tokensBefore, trustBefore, msg.value);
+        uint256 tokensAfter = calculateTokensAfterBuy(tokensBefore, trustBefore, trustAmount);
 
         require(tokensAfter > tokensBefore, "No tokens to buy");
         tokensBought = tokensAfter - tokensBefore;
@@ -156,10 +157,14 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         require(token.currentSupply + tokensBought <= token.maxSupply, "Exceeds max supply");
 
         // Calculate fee
-        uint256 fee = (msg.value * FEE_PERCENT) / 100;
+        uint256 fee = (trustAmount * FEE_PERCENT) / 100;
+
+        // Transfer TRUST tokens from buyer to contract
+        uint256 trustAmountAfterFee = trustAmount - fee;
+        IERC20(trustToken).transferFrom(msg.sender, address(this), trustAmount);
 
         // Update token info
-        token.virtualTrust += msg.value;
+        token.virtualTrust += trustAmountAfterFee;
         token.virtualTokens = tokensAfter;
         token.currentSupply += tokensBought;
 
@@ -173,9 +178,9 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         MemeToken(tokenAddress).mint(msg.sender, tokensBought);
 
         // Send fee to contract owner
-        payable(owner()).transfer(fee);
+        IERC20(trustToken).transfer(owner(), fee);
 
-        emit TokensBought(tokenAddress, msg.sender, msg.value, tokensBought, getCurrentPrice(tokenAddress));
+        emit TokensBought(tokenAddress, msg.sender, trustAmountAfterFee, tokensBought, getCurrentPrice(tokenAddress));
         return tokensBought;
     }
 
@@ -212,7 +217,7 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         MemeToken(tokenAddress).burnFrom(msg.sender, tokenAmount);
 
         // Send TRUST to seller
-        payable(msg.sender).transfer(trustReceived);
+        IERC20(trustToken).transfer(msg.sender, trustReceived);
 
         emit TokensSold(tokenAddress, msg.sender, trustReceived, tokenAmount, getCurrentPrice(tokenAddress));
         return trustReceived;
@@ -307,41 +312,7 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         token.virtualTrust = 0;
 
         // Send remaining TRUST to creator
-        payable(token.creator).transfer(remainingLiquidity);
+        IERC20(trustToken).transfer(token.creator, remainingLiquidity);
     }
 }
 
-/**
- * @title MemeToken
- * @dev ERC20 token for meme coins
- */
-contract MemeToken is ERC20, Ownable {
-    uint256 public immutable maxSupply;
-    address public launchpad;
-
-    modifier onlyLaunchpad() {
-        require(msg.sender == launchpad, "Only launchpad");
-        _;
-    }
-
-    constructor(
-        string memory name,
-        string memory symbol,
-        uint256 _maxSupply
-    ) ERC20(name, symbol) Ownable(msg.sender) {
-        maxSupply = _maxSupply;
-    }
-
-    function setLaunchpad(address _launchpad) external onlyOwner {
-        launchpad = _launchpad;
-    }
-
-    function mint(address to, uint256 amount) external onlyLaunchpad {
-        require(totalSupply() + amount <= maxSupply, "Exceeds max supply");
-        _mint(to, amount);
-    }
-
-    function burnFrom(address account, uint256 amount) external onlyLaunchpad {
-        _burn(account, amount);
-    }
-}
