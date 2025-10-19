@@ -2,12 +2,11 @@
 pragma solidity ^0.8.19;
 
 import "forge-std/Script.sol";
-import "../contracts/TrustToken.sol";
 import "../contracts/MemeLaunchpad.sol";
 
 /**
  * @title DeployMemeLaunchpad
- * @dev Deployment script for MemeLaunchpad and TrustToken
+ * @dev Deployment script for MemeLaunchpad
  */
 contract DeployMemeLaunchpad is Script {
     function run() external {
@@ -19,19 +18,9 @@ contract DeployMemeLaunchpad is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
-        // Deploy TRUST token first
-        TrustToken trustToken = new TrustToken(
-            "TRUST",
-            "TRUST",
-            18,
-            1000000000000000000000000, // 1M tokens with 18 decimals
-            msg.sender
-        );
-
-        console.log("TRUST Token deployed at:", address(trustToken));
-
-        // Deploy MemeLaunchpad with TRUST token address
-        MemeLaunchpad memeLaunchpad = new MemeLaunchpad(address(trustToken));
+        // Deploy MemeLaunchpad with treasury address
+        address treasuryAddress = 0xD4F79436a2a69C70127570749dc39Ae5D5C0c646;
+        MemeLaunchpad memeLaunchpad = new MemeLaunchpad(treasuryAddress);
 
         console.log("MemeLaunchpad deployed at:", address(memeLaunchpad));
         console.log("Network URL:", networkUrl);

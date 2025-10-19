@@ -2,7 +2,6 @@
 pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
@@ -28,7 +27,7 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
     event TokensBought(
         address indexed tokenAddress,
         address indexed buyer,
-        uint256 trustAmount,
+        uint256 ethAmount,
         uint256 tokenAmount,
         uint256 newPrice
     );
@@ -36,7 +35,7 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
     event TokensSold(
         address indexed tokenAddress,
         address indexed seller,
-        uint256 trustAmount,
+        uint256 ethAmount,
         uint256 tokenAmount,
         uint256 newPrice
     );
@@ -65,16 +64,17 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
     // Constants
     uint256 public constant CREATOR_ALLOCATION_PERCENT = 10; // 10% for creator
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 1e18; // 1B tokens max
-    uint256 public constant INITIAL_PRICE = 0.000001 * 1e18; // Initial price in TRUST
+    uint256 public constant INITIAL_PRICE = 0.000001 * 1e18; // Initial price in ETH
     uint256 public constant FEE_PERCENT = 1; // 1% fee
+    uint256 public constant CREATION_FEE = 5 * 1e18; // 5 native tokens for creation
 
     // State variables
     mapping(address => TokenInfo) public tokenInfo;
     mapping(address => bool) public isValidToken;
     address[] public allTokens;
 
-    // TRUST token address (the base currency)
-    address public trustToken;
+    // Treasury address for fees
+    address public treasuryAddress;
 
     // Modifiers
     modifier onlyValidToken(address tokenAddress) {
@@ -82,8 +82,8 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         _;
     }
 
-    constructor(address _trustToken) Ownable(msg.sender) {
-        trustToken = _trustToken;
+    constructor(address _treasuryAddress) Ownable(msg.sender) {
+        treasuryAddress = _treasuryAddress;
     }
 
     /**
@@ -94,10 +94,19 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         string memory symbol,
         string memory metadata,
         uint256 totalSupply
-    ) external returns (address) {
+    ) external payable returns (address) {
         require(bytes(name).length > 0, "Name required");
         require(bytes(symbol).length > 0, "Symbol required");
         require(totalSupply > 0 && totalSupply <= MAX_SUPPLY, "Invalid supply");
+        require(msg.value >= CREATION_FEE, "Insufficient creation fee");
+
+        // Transfer creation fee to treasury (any excess is kept by contract)
+        payable(treasuryAddress).transfer(CREATION_FEE);
+
+        // Refund excess ETH if any
+        if (msg.value > CREATION_FEE) {
+            payable(msg.sender).transfer(msg.value - CREATION_FEE);
+        }
 
         // Create the token contract
         MemeToken token = new MemeToken(name, symbol, totalSupply);
@@ -134,21 +143,23 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
     /**
      * @dev Buy tokens from the bonding curve using pump.fun style calculation
      */
-    function buyTokens(address tokenAddress, uint256 trustAmount, uint256 minTokensOut)
+    function buyTokens(address tokenAddress, uint256 minTokensOut)
         external
+        payable
         nonReentrant
         onlyValidToken(tokenAddress)
         returns (uint256 tokensBought)
     {
         TokenInfo storage token = tokenInfo[tokenAddress];
         require(!token.completed, "Token launch completed");
-        require(trustAmount > 0, "Must send TRUST");
+        require(msg.value > 0, "Must send ETH");
 
+        uint256 ethAmount = msg.value;
         uint256 tokensBefore = token.virtualTokens + token.currentSupply;
-        uint256 trustBefore = token.virtualTrust;
+        uint256 ethBefore = token.virtualTrust;
 
         // Calculate tokens to receive using pump.fun integral formula
-        uint256 tokensAfter = calculateTokensAfterBuy(tokensBefore, trustBefore, trustAmount);
+        uint256 tokensAfter = calculateTokensAfterBuy(tokensBefore, ethBefore, ethAmount);
 
         require(tokensAfter > tokensBefore, "No tokens to buy");
         tokensBought = tokensAfter - tokensBefore;
@@ -157,14 +168,11 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         require(token.currentSupply + tokensBought <= token.maxSupply, "Exceeds max supply");
 
         // Calculate fee
-        uint256 fee = (trustAmount * FEE_PERCENT) / 100;
-
-        // Transfer TRUST tokens from buyer to contract
-        uint256 trustAmountAfterFee = trustAmount - fee;
-        IERC20(trustToken).transferFrom(msg.sender, address(this), trustAmount);
+        uint256 fee = (ethAmount * FEE_PERCENT) / 100;
 
         // Update token info
-        token.virtualTrust += trustAmountAfterFee;
+        uint256 ethAmountAfterFee = ethAmount - fee;
+        token.virtualTrust += ethAmountAfterFee;
         token.virtualTokens = tokensAfter;
         token.currentSupply += tokensBought;
 
@@ -177,10 +185,12 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         // Mint tokens to buyer
         MemeToken(tokenAddress).mint(msg.sender, tokensBought);
 
-        // Send fee to contract owner
-        IERC20(trustToken).transfer(owner(), fee);
+        // Send fee to treasury
+        payable(treasuryAddress).transfer(fee);
 
-        emit TokensBought(tokenAddress, msg.sender, trustAmountAfterFee, tokensBought, getCurrentPrice(tokenAddress));
+        // Calculate current price for the event (reduces stack depth)
+        uint256 currentPrice = getCurrentPrice(tokenAddress);
+        emit TokensBought(tokenAddress, msg.sender, ethAmountAfterFee, tokensBought, currentPrice);
         return tokensBought;
     }
 
@@ -190,37 +200,46 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
     function sellTokens(
         address tokenAddress,
         uint256 tokenAmount,
-        uint256 minTrustOut
-    ) external nonReentrant onlyValidToken(tokenAddress) returns (uint256 trustReceived) {
+        uint256 minEthOut
+    ) external nonReentrant onlyValidToken(tokenAddress) returns (uint256 ethReceived) {
         TokenInfo storage token = tokenInfo[tokenAddress];
         require(!token.completed, "Token launch completed");
         require(tokenAmount > 0, "Must sell tokens");
 
         uint256 tokensBefore = token.virtualTokens + token.currentSupply;
-        uint256 trustBefore = token.virtualTrust;
+        uint256 ethBefore = token.virtualTrust;
 
-        // Calculate TRUST to receive using pump.fun integral formula
+        // Calculate ETH to receive using pump.fun integral formula
         uint256 tokensAfter = tokensBefore - tokenAmount;
-        uint256 trustAfter = calculateTrustAfterSell(tokensBefore, trustBefore, tokensAfter);
+        uint256 ethAfter = calculateTrustAfterSell(tokensBefore, ethBefore, tokensAfter);
 
-        require(trustAfter < trustBefore, "No TRUST to receive");
-        trustReceived = trustBefore - trustAfter;
+        require(ethAfter < ethBefore, "No ETH to receive");
+        ethReceived = ethBefore - ethAfter;
 
-        require(trustReceived >= minTrustOut, "Slippage too high");
+        require(ethReceived >= minEthOut, "Slippage too high");
 
         // Update virtual reserves
-        token.virtualTrust = trustAfter;
+        token.virtualTrust = ethAfter;
         token.virtualTokens = tokensAfter;
         token.currentSupply -= tokenAmount;
 
         // Burn tokens from seller
         MemeToken(tokenAddress).burnFrom(msg.sender, tokenAmount);
 
-        // Send TRUST to seller
-        IERC20(trustToken).transfer(msg.sender, trustReceived);
+        // Calculate and deduct fee from received ETH
+        uint256 fee = (ethReceived * FEE_PERCENT) / 100;
+        uint256 ethAfterFee = ethReceived - fee;
 
-        emit TokensSold(tokenAddress, msg.sender, trustReceived, tokenAmount, getCurrentPrice(tokenAddress));
-        return trustReceived;
+        // Send ETH to seller (after fee deduction)
+        payable(msg.sender).transfer(ethAfterFee);
+
+        // Send fee to treasury
+        payable(treasuryAddress).transfer(fee);
+
+        // Calculate current price for the event (reduces stack depth)
+        uint256 currentPrice = getCurrentPrice(tokenAddress);
+        emit TokensSold(tokenAddress, msg.sender, ethAfterFee, tokenAmount, currentPrice);
+        return ethAfterFee;
     }
 
     /**
@@ -311,8 +330,8 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
 
         token.virtualTrust = 0;
 
-        // Send remaining TRUST to creator
-        IERC20(trustToken).transfer(token.creator, remainingLiquidity);
+        // Send remaining ETH to creator
+        payable(token.creator).transfer(remainingLiquidity);
     }
 }
 
