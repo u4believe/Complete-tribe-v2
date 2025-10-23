@@ -7,7 +7,7 @@ import { GenericContractsDeclaration } from "~~/utils/scaffold-eth/contract";
 const deployedContracts = {
   13579: {
     MemeLaunchpad: {
-      address: "0x7be0aC2c17799a26C68e462784E0Bb75107b116f",
+      address: "0x303067298251E267dB57b4e9859D90517bF9abEc",
       abi: [
         {
           type: "constructor",

@@ -52,6 +52,13 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         uint256 amount
     );
 
+    event TokensAllocated(
+        address indexed tokenAddress,
+        address indexed recipient,
+        uint256 amount,
+        uint256 percentage
+    );
+
     // Structs
     struct TokenInfo {
         string name;
@@ -69,9 +76,9 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
     }
 
     // Constants
-    uint256 public constant CREATOR_ALLOCATION_PERCENT = 5; // 5% for creator
+    uint256 public constant CREATOR_ALLOCATION_PERCENT = 0; // 0% for creator (no creator allocation)
     uint256 public constant BONDING_CURVE_PERCENT = 70; // 70% for bonding curve
-    uint256 public constant HELD_PERCENT = 25; // 25% held in contract
+    uint256 public constant HELD_PERCENT = 30; // 30% held in memelaunchpad
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 1e18; // 1B tokens max
     uint256 public constant INITIAL_PRICE = 0.000001 * 1e18; // Initial price in ETH
     uint256 public constant FEE_PERCENT = 1; // 1% fee
@@ -114,23 +121,22 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         // Set launchpad for minting permissions
         token.setLaunchpad(address(this));
 
-        // Calculate allocations
-        uint256 creatorAmount = (totalSupply * CREATOR_ALLOCATION_PERCENT) / 100;
+        // Calculate allocations (70% bonding curve, 30% memelaunchpad, 0% creator)
         uint256 bondingAmount = (totalSupply * BONDING_CURVE_PERCENT) / 100;
         uint256 heldAmount = (totalSupply * HELD_PERCENT) / 100;
 
-        // Initialize token info
+        // Initialize token info (no creator allocation)
         tokenInfo[address(token)] = TokenInfo({
             name: name,
             symbol: symbol,
             metadata: metadata,
             creator: msg.sender,
-            creatorAllocation: creatorAmount,
+            creatorAllocation: 0, // No creator allocation
             heldTokens: heldAmount,
             maxSupply: totalSupply,
-            currentSupply: creatorAmount, // Creator's tokens are in circulation
+            currentSupply: 0, // Start with 0 circulating supply
             virtualTrust: 0,
-            virtualTokens: totalSupply, // All tokens start as virtual tokens in bonding curve
+            virtualTokens: bondingAmount, // 70% allocated to bonding curve
             completed: false,
             creationTime: block.timestamp
         });
@@ -138,17 +144,32 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         isValidToken[address(token)] = true;
         allTokens.push(address(token));
 
-        // Mint allocations
-        token.mint(msg.sender, creatorAmount); // 5% to creator
-        token.mint(address(this), heldAmount); // 25% held in contract
+        // Mint allocations (no creator tokens)
+        token.mint(address(this), heldAmount); // 30% held in memelaunchpad
 
-        // Update current supply to reflect creator allocation that's in circulation
-        // The creator's tokens are considered in circulation from the start
-        tokenInfo[address(token)].currentSupply = creatorAmount;
-
-        emit TokenCreated(address(token), name, symbol, metadata, msg.sender, creatorAmount);
+        emit TokenCreated(address(token), name, symbol, metadata, msg.sender, 0);
 
         return address(token);
+    }
+
+    /**
+     * @dev Allocate 2% of a token's supply to any address (admin only)
+     * @param tokenAddress - Address of the token to allocate from
+     * @param recipient - Address to receive the tokens
+     */
+    function allocateTokens(address tokenAddress, address recipient) external onlyOwner onlyValidToken(tokenAddress) {
+        require(recipient != address(0), "Cannot allocate to zero address");
+        require(!tokenInfo[tokenAddress].completed, "Token launch completed");
+
+        // Calculate 2% of token's max supply
+        uint256 allocationAmount = (tokenInfo[tokenAddress].maxSupply * 2) / 100;
+
+        require(allocationAmount > 0, "Allocation amount must be greater than 0");
+
+        // Mint tokens directly to recipient
+        MemeToken(tokenAddress).mint(recipient, allocationAmount);
+
+        emit TokensAllocated(tokenAddress, recipient, allocationAmount, 2);
     }
 
     /**
@@ -187,7 +208,7 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         token.virtualTokens = tokensAfter;
         token.currentSupply += tokensBought;
 
-        // Check if token should be completed
+        // Check if token should be completed (when circulating supply reaches max supply)
         if (token.currentSupply >= token.maxSupply && !token.completed) {
             token.completed = true;
             emit TokenCompleted(tokenAddress, token.currentSupply, getCurrentPrice(tokenAddress));
