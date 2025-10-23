@@ -46,6 +46,12 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         uint256 finalPrice
     );
 
+    event HeldTokensWithdrawn(
+        address indexed tokenAddress,
+        address indexed owner,
+        uint256 amount
+    );
+
     // Structs
     struct TokenInfo {
         string name;
@@ -53,6 +59,7 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         string metadata;
         address creator;
         uint256 creatorAllocation; // Amount of tokens allocated to creator
+        uint256 heldTokens; // Amount of tokens held in the contract
         uint256 maxSupply; // Maximum token supply before completion
         uint256 currentSupply; // Current token supply
         uint256 virtualTrust; // Virtual TRUST in the bonding curve
@@ -62,7 +69,9 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
     }
 
     // Constants
-    uint256 public constant CREATOR_ALLOCATION_PERCENT = 10; // 10% for creator
+    uint256 public constant CREATOR_ALLOCATION_PERCENT = 5; // 5% for creator
+    uint256 public constant BONDING_CURVE_PERCENT = 70; // 70% for bonding curve
+    uint256 public constant HELD_PERCENT = 25; // 25% held in contract
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 1e18; // 1B tokens max
     uint256 public constant INITIAL_PRICE = 0.000001 * 1e18; // Initial price in ETH
     uint256 public constant FEE_PERCENT = 1; // 1% fee
@@ -94,25 +103,21 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         string memory symbol,
         string memory metadata,
         uint256 totalSupply
-    ) external payable returns (address) {
+    ) external returns (address) {
         require(bytes(name).length > 0, "Name required");
         require(bytes(symbol).length > 0, "Symbol required");
         require(totalSupply > 0 && totalSupply <= MAX_SUPPLY, "Invalid supply");
-        require(msg.value >= CREATION_FEE, "Insufficient creation fee");
-
-        // Transfer creation fee to treasury (any excess is kept by contract)
-        payable(treasuryAddress).transfer(CREATION_FEE);
-
-        // Refund excess ETH if any
-        if (msg.value > CREATION_FEE) {
-            payable(msg.sender).transfer(msg.value - CREATION_FEE);
-        }
 
         // Create the token contract
         MemeToken token = new MemeToken(name, symbol, totalSupply);
 
-        // Calculate creator allocation (10% of total supply)
-        uint256 creatorAllocation = (totalSupply * CREATOR_ALLOCATION_PERCENT) / 100;
+        // Set launchpad for minting permissions
+        token.setLaunchpad(address(this));
+
+        // Calculate allocations
+        uint256 creatorAmount = (totalSupply * CREATOR_ALLOCATION_PERCENT) / 100;
+        uint256 bondingAmount = (totalSupply * BONDING_CURVE_PERCENT) / 100;
+        uint256 heldAmount = (totalSupply * HELD_PERCENT) / 100;
 
         // Initialize token info
         tokenInfo[address(token)] = TokenInfo({
@@ -120,11 +125,12 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
             symbol: symbol,
             metadata: metadata,
             creator: msg.sender,
-            creatorAllocation: creatorAllocation,
+            creatorAllocation: creatorAmount,
+            heldTokens: heldAmount,
             maxSupply: totalSupply,
-            currentSupply: 0,
+            currentSupply: creatorAmount, // Only creator's tokens are initially circulating
             virtualTrust: 0,
-            virtualTokens: 0,
+            virtualTokens: bondingAmount, // 70% allocated to bonding curve
             completed: false,
             creationTime: block.timestamp
         });
@@ -132,10 +138,11 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         isValidToken[address(token)] = true;
         allTokens.push(address(token));
 
-        // Mint creator allocation
-        token.mint(msg.sender, creatorAllocation);
+        // Mint allocations
+        token.mint(msg.sender, creatorAmount); // 5% to creator
+        token.mint(address(this), heldAmount); // 25% held in contract
 
-        emit TokenCreated(address(token), name, symbol, metadata, msg.sender, creatorAllocation);
+        emit TokenCreated(address(token), name, symbol, metadata, msg.sender, creatorAmount);
 
         return address(token);
     }
@@ -332,6 +339,24 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
 
         // Send remaining ETH to creator
         payable(token.creator).transfer(remainingLiquidity);
+    }
+
+    /**
+     * @dev Withdraw held tokens (only owner)
+     */
+    function withdrawHeldTokens(address tokenAddress) external onlyOwner onlyValidToken(tokenAddress) nonReentrant {
+        TokenInfo storage token = tokenInfo[tokenAddress];
+        uint256 amount = token.heldTokens;
+        require(amount > 0, "No held tokens");
+
+        // Transfer held tokens to owner
+        bool success = MemeToken(tokenAddress).transfer(owner(), amount);
+        require(success, "Transfer failed");
+
+        // Update held tokens
+        token.heldTokens = 0;
+
+        emit HeldTokensWithdrawn(tokenAddress, owner(), amount);
     }
 }
 
