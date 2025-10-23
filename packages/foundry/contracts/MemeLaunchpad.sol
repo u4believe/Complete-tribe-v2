@@ -128,9 +128,9 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
             creatorAllocation: creatorAmount,
             heldTokens: heldAmount,
             maxSupply: totalSupply,
-            currentSupply: creatorAmount, // Only creator's tokens are initially circulating
+            currentSupply: creatorAmount, // Creator's tokens are in circulation
             virtualTrust: 0,
-            virtualTokens: bondingAmount, // 70% allocated to bonding curve
+            virtualTokens: totalSupply, // All tokens start as virtual tokens in bonding curve
             completed: false,
             creationTime: block.timestamp
         });
@@ -141,6 +141,10 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         // Mint allocations
         token.mint(msg.sender, creatorAmount); // 5% to creator
         token.mint(address(this), heldAmount); // 25% held in contract
+
+        // Update current supply to reflect creator allocation that's in circulation
+        // The creator's tokens are considered in circulation from the start
+        tokenInfo[address(token)].currentSupply = creatorAmount;
 
         emit TokenCreated(address(token), name, symbol, metadata, msg.sender, creatorAmount);
 
@@ -162,7 +166,7 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         require(msg.value > 0, "Must send ETH");
 
         uint256 ethAmount = msg.value;
-        uint256 tokensBefore = token.virtualTokens + token.currentSupply;
+        uint256 tokensBefore = token.virtualTokens - token.currentSupply;
         uint256 ethBefore = token.virtualTrust;
 
         // Calculate tokens to receive using pump.fun integral formula
@@ -213,7 +217,7 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         require(!token.completed, "Token launch completed");
         require(tokenAmount > 0, "Must sell tokens");
 
-        uint256 tokensBefore = token.virtualTokens + token.currentSupply;
+        uint256 tokensBefore = token.virtualTokens - token.currentSupply;
         uint256 ethBefore = token.virtualTrust;
 
         // Calculate ETH to receive using pump.fun integral formula
@@ -259,9 +263,9 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
             return INITIAL_PRICE;
         }
 
-        // Pump.fun style bonding curve: price = (virtualTrust * virtualTokens) / (virtualTokens + tokenAmount) ^ 2
+        // Pump.fun style bonding curve: price = (virtualTrust * virtualTokens) / (virtualTokens - currentSupply) ^ 2
         uint256 numerator = token.virtualTrust * token.virtualTokens;
-        uint256 denominator = (token.virtualTokens + token.currentSupply) ** 2;
+        uint256 denominator = (token.virtualTokens - token.currentSupply) ** 2;
         return (numerator * 1e18) / denominator;
     }
 
