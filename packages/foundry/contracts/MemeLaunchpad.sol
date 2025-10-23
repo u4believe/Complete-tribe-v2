@@ -125,11 +125,7 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         uint256 bondingAmount = (totalSupply * BONDING_CURVE_PERCENT) / 100;
         uint256 heldAmount = (totalSupply * HELD_PERCENT) / 100;
 
-        // Initialize token info with proper bonding curve setup
-        // Use initial virtual values to enable first purchase
-        uint256 initialVirtualTokens = bondingAmount;
-        uint256 initialVirtualTrust = 1 * 1e18; // 1 ETH equivalent for initial pricing
-
+        // Initialize token info with simplified bonding curve
         tokenInfo[address(token)] = TokenInfo({
             name: name,
             symbol: symbol,
@@ -139,8 +135,8 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
             heldTokens: heldAmount,
             maxSupply: totalSupply,
             currentSupply: 0, // Start with 0 circulating supply
-            virtualTrust: initialVirtualTrust, // Start with some virtual ETH
-            virtualTokens: initialVirtualTokens, // Virtual tokens available for curve
+            virtualTrust: 0, // Not used in simplified curve
+            virtualTokens: 0, // Not used in simplified curve
             completed: false,
             creationTime: block.timestamp
         });
@@ -191,15 +187,17 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         require(msg.value > 0, "Must send ETH");
 
         uint256 ethAmount = msg.value;
-        uint256 tokensBefore = token.virtualTokens;
-        uint256 ethBefore = token.virtualTrust;
 
-        // Calculate tokens to receive using pump.fun style formula
-        // tokensAfter = (tokensBefore * ethBefore) / (ethBefore + ethAmount)
-        uint256 tokensAfter = (tokensBefore * ethBefore) / (ethBefore + ethAmount);
+        // Simple linear bonding curve calculation
+        // Price increases linearly with supply: price = basePrice * (1 + currentSupply/totalSupply)
+        uint256 basePrice = INITIAL_PRICE;
+        uint256 priceIncrease = (token.currentSupply * basePrice) / token.maxSupply;
+        uint256 currentPrice = basePrice + priceIncrease;
 
-        require(tokensAfter > tokensBefore, "No tokens to buy");
-        tokensBought = tokensAfter - tokensBefore;
+        // Calculate tokens that can be bought with the ETH sent
+        tokensBought = (ethAmount * 1e18) / currentPrice;
+
+        require(tokensBought > 0, "No tokens to buy");
 
         require(tokensBought >= minTokensOut, "Slippage too high");
         require(token.currentSupply + tokensBought <= token.maxSupply, "Exceeds max supply");
@@ -207,10 +205,9 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         // Calculate fee
         uint256 fee = (ethAmount * FEE_PERCENT) / 100;
 
-        // Update token info
+        // Update token info (simplified approach)
         uint256 ethAmountAfterFee = ethAmount - fee;
-        token.virtualTrust = ethBefore + ethAmountAfterFee; // Update to new trust level
-        token.virtualTokens = tokensAfter; // Update to new token level after purchase
+        // For linear curve, we don't need complex virtual token management
         token.currentSupply += tokensBought;
 
         // Check if token should be completed (when circulating supply reaches max supply)
@@ -225,8 +222,7 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         // Send fee to treasury
         payable(treasuryAddress).transfer(fee);
 
-        // Calculate current price for the event (reduces stack depth)
-        uint256 currentPrice = getCurrentPrice(tokenAddress);
+        // Emit event with calculated price
         emit TokensBought(tokenAddress, msg.sender, ethAmountAfterFee, tokensBought, currentPrice);
         return tokensBought;
     }
@@ -243,22 +239,20 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         require(!token.completed, "Token launch completed");
         require(tokenAmount > 0, "Must sell tokens");
 
-        uint256 tokensBefore = token.virtualTokens;
-        uint256 ethBefore = token.virtualTrust;
+        // Simple linear bonding curve calculation for selling
+        // Price at time of sale: basePrice * (1 + currentSupply/totalSupply)
+        uint256 basePrice = INITIAL_PRICE;
+        uint256 priceIncrease = (token.currentSupply * basePrice) / token.maxSupply;
+        uint256 currentPrice = basePrice + priceIncrease;
 
-        // Calculate ETH to receive using pump.fun style formula
-        // ethAfter = (tokensAfter * ethBefore) / tokensBefore
-        uint256 tokensAfter = tokensBefore - tokenAmount;
-        uint256 ethAfter = (tokensAfter * ethBefore) / tokensBefore;
+        // Calculate ETH to receive (before burning)
+        ethReceived = (tokenAmount * currentPrice) / 1e18;
 
-        require(ethAfter < ethBefore, "No ETH to receive");
-        ethReceived = ethBefore - ethAfter;
+        require(ethReceived > 0, "No ETH to receive");
 
         require(ethReceived >= minEthOut, "Slippage too high");
 
-        // Update virtual reserves
-        token.virtualTrust = ethAfter; // Update to new trust level after sale
-        token.virtualTokens = tokensAfter; // Update to new token level after sale
+        // Update supply (simplified approach)
         token.currentSupply -= tokenAmount;
 
         // Burn tokens from seller
@@ -274,8 +268,7 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
         // Send fee to treasury
         payable(treasuryAddress).transfer(fee);
 
-        // Calculate current price for the event (reduces stack depth)
-        uint256 currentPrice = getCurrentPrice(tokenAddress);
+        // Emit event with calculated price
         emit TokensSold(tokenAddress, msg.sender, ethAfterFee, tokenAmount, currentPrice);
         return ethAfterFee;
     }
@@ -290,12 +283,11 @@ contract MemeLaunchpad is Ownable, ReentrancyGuard {
             return INITIAL_PRICE;
         }
 
-        // Pump.fun style bonding curve: price = virtualTrust / virtualTokens
-        // This gives the price per token in the bonding curve
-        if (token.virtualTokens == 0) {
-            return INITIAL_PRICE;
-        }
-        return (token.virtualTrust * 1e18) / token.virtualTokens;
+        // Linear bonding curve: price increases with supply
+        // price = basePrice * (1 + currentSupply/maxSupply)
+        uint256 basePrice = INITIAL_PRICE;
+        uint256 priceIncrease = (token.currentSupply * basePrice) / token.maxSupply;
+        return basePrice + priceIncrease;
     }
 
     /**
