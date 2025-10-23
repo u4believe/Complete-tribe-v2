@@ -135,28 +135,37 @@ export const useScaffoldEventHistory = <
 
           const deployedOnBlock = deployedContractData.deployedOnBlock;
 
-          // Handle empty object case and other invalid types
+          // Handle number (primary case according to type definition)
+          if (typeof deployedOnBlock === "number") {
+            return BigInt(deployedOnBlock);
+          }
+
+          // Handle bigint
+          if (typeof deployedOnBlock === "bigint") {
+            return deployedOnBlock;
+          }
+
+          // Handle string (fallback)
+          if (typeof deployedOnBlock === "string") {
+            if (/^\d+$/.test(deployedOnBlock)) {
+              return BigInt(deployedOnBlock);
+            }
+            return 0n;
+          }
+
+          // Handle unexpected object case (defensive programming)
           if (typeof deployedOnBlock === "object" && deployedOnBlock !== null) {
             if (Object.keys(deployedOnBlock).length === 0) {
               return 0n;
             }
-            // If it's an object but not empty, try to get a numeric value from it
-            if ("toString" in deployedOnBlock && typeof deployedOnBlock.toString === "function") {
-              const stringValue = deployedOnBlock.toString();
+            // If it's an object with a toString method, try to extract numeric value
+            if ("toString" in deployedOnBlock && typeof (deployedOnBlock as any).toString === "function") {
+              const stringValue = (deployedOnBlock as any).toString();
               if (/^\d+$/.test(stringValue)) {
                 return BigInt(stringValue);
               }
             }
             return 0n;
-          }
-
-          // Handle string, number, or bigint
-          if (typeof deployedOnBlock === "string" || typeof deployedOnBlock === "number") {
-            return BigInt(deployedOnBlock);
-          }
-
-          if (typeof deployedOnBlock === "bigint") {
-            return deployedOnBlock;
           }
 
           return 0n;
